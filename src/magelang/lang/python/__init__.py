@@ -1,3 +1,3 @@
 
 from .cst import *
-from .lexer import *
+from ...generator.python.lexer import *
