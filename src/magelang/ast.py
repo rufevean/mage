@@ -1,3 +1,9 @@
+"""
+Hand-written abstract syntax tree (AST) of the Mage grammar.
+
+Also defines some visitors over Mage expressions and other useful procedures to
+make handling the AST a bit easier.
+"""
 
 from functools import cache
 import sys
@@ -5,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, Generator, assert_never
 
 
 if TYPE_CHECKING:
-    from .repr import Type
+    from .treespec import Type
 
 
 class Node:
@@ -258,9 +264,10 @@ class Decorator(Node):
         self.name = name
         self.args = args
 
-EXTERN = 1
-PUBLIC = 2
-FORCE_TOKEN  = 4
+EXTERN        = 1
+PUBLIC        = 2
+FORCE_TOKEN   = 4
+FORCE_KEYWORD = 8
 
 unit_rule_name = 'void'
 string_rule_type = 'String'
@@ -312,6 +319,10 @@ class Rule(Node):
     def is_token(self) -> bool:
         return (self.flags & FORCE_TOKEN) > 0
 
+    @property
+    def is_keyword(self) -> bool:
+        return (self.flags & FORCE_KEYWORD) > 0
+
     def has_decorator(self, name: str) -> bool:
         for decorator in self.decorators:
             if decorator.name == name:
@@ -327,7 +338,7 @@ class Rule(Node):
         return self.has_decorator('wrap')
 
     @property
-    def is_keyword(self) -> bool:
+    def is_keyword_def(self) -> bool:
         return self.has_decorator('keyword')
 
 class Grammar(Node):
@@ -410,13 +421,20 @@ class Grammar(Node):
     @cache
     def keyword_rule(self) -> Rule | None:
         for rule in self.rules:
-            if rule.is_keyword:
+            if rule.is_keyword_def:
                 return rule
 
     def lookup(self, name: str) -> Rule | None:
         return self._rules_by_name.get(name)
 
 def rewrite_expr(expr: Expr, proc: Callable[[Expr], Expr | None]) -> Expr:
+    """
+    Rewrite an expression according to a procedure that either returns a new
+    node if the expression needs to be rewritten or `None` otherwise.
+
+    This works recursively, e.g. a deeply nested `LitExpr` will be rewritten
+    with only a top-level call to `rewrite_expr`.
+    """
 
     def visit(expr: Expr) -> Expr:
 
@@ -428,23 +446,23 @@ def rewrite_expr(expr: Expr, proc: Callable[[Expr], Expr | None]) -> Expr:
             return expr
         if isinstance(expr, RepeatExpr):
             new_expr = visit(expr.expr)
-            if new_expr == expr.expr:
+            if new_expr is expr.expr:
                 return expr
             return RepeatExpr(min=expr.min, max=expr.max, expr=new_expr, rules=expr.rules, label=expr.label)
         if isinstance(expr, LookaheadExpr):
             new_expr = visit(expr.expr)
-            if new_expr == expr.expr:
+            if new_expr is expr.expr:
                 return expr
             return LookaheadExpr(expr=new_expr, is_negated=expr.is_negated, rules=expr.rules, label=expr.label)
         if isinstance(expr, HideExpr):
             new_expr = visit(expr.expr)
-            if new_expr == expr.expr:
+            if new_expr is expr.expr:
                 return expr
             return HideExpr(expr=new_expr, rules=expr.rules, label=expr.label)
         if isinstance(expr, ListExpr):
             new_element = visit(expr.element)
             new_separator = visit(expr.separator)
-            if new_element == expr.element and new_separator == expr.separator:
+            if new_element is expr.element and new_separator is expr.separator:
                 return expr
             return ListExpr(element=new_element, separator=new_separator, min_count=expr.min_count, rules=expr.rules, label=expr.label)
         if isinstance(expr, ChoiceExpr):
@@ -452,7 +470,7 @@ def rewrite_expr(expr: Expr, proc: Callable[[Expr], Expr | None]) -> Expr:
             changed = False
             for element in expr.elements:
                 new_element = visit(element)
-                if new_element != element:
+                if new_element is not element:
                     changed = True
                 new_elements.append(new_element)
             if not changed:
@@ -463,7 +481,7 @@ def rewrite_expr(expr: Expr, proc: Callable[[Expr], Expr | None]) -> Expr:
             changed = False
             for element in expr.elements:
                 new_element = visit(element)
-                if new_element != element:
+                if new_element is not element:
                     changed = True
                 new_elements.append(new_element)
             if not changed:
@@ -474,6 +492,11 @@ def rewrite_expr(expr: Expr, proc: Callable[[Expr], Expr | None]) -> Expr:
     return visit(expr)
 
 def for_each_expr(node: Expr, proc: Callable[[Expr], None]) -> None:
+    """
+    Visit each direct child of a given expression exactly once.
+
+    In the case that an expression does not have direct children, this function does nothing.
+    """
     if isinstance(node, LitExpr) or isinstance(node, CharSetExpr) or isinstance(node, RefExpr):
         return
     if isinstance(node, RepeatExpr) or isinstance(node, LookaheadExpr) or isinstance(node, HideExpr):

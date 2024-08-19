@@ -1,8 +1,8 @@
 
 from typing import assert_never
 
-from .util import build_is_none, build_isinstance, build_or, build_union, gen_deep_test, gen_initializers, gen_py_type, namespaced, rule_type_to_py_type, to_class_name, quote_py_type
-from magelang.repr import *
+from .util import build_is_none, build_or, build_union, gen_deep_test, gen_initializers, gen_py_type, namespaced, rule_type_to_py_type, to_class_name, quote_py_type
+from magelang.treespec import *
 from magelang.lang.python.cst import *
 from magelang.lang.python.emitter import emit
 
@@ -38,7 +38,9 @@ def generate_tree(
     def get_parent_type(name: str) -> Type:
         if name not in parent_nodes:
             return NeverType()
-        return UnionType(list(name_to_type(name) for name in parent_nodes[name]))
+        types = FrozenList(name_to_type(name) for name in sorted(parent_nodes[name]))
+        types.freeze()
+        return UnionType(types)
 
     def add_to_parent_nodes(name: str, ty: Type) -> None:
         if isinstance(ty, VariantType):
@@ -60,7 +62,7 @@ def generate_tree(
         elif isinstance(ty, UnionType):
             for element in ty.types:
                 add_to_parent_nodes(name, element)
-        elif isinstance(ty, NoneType) or isinstance(ty, ExternType) or isinstance(ty, NeverType):
+        elif isinstance(ty, NoneType) or isinstance(ty, ExternType) or isinstance(ty, NeverType) or isinstance(ty, AnyType):
             pass
         else:
             assert_never(ty)
@@ -69,7 +71,7 @@ def generate_tree(
         for spec in specs:
             if not isinstance(spec, NodeSpec):
                 continue
-            for field in spec.members:
+            for field in spec.fields:
                 add_to_parent_nodes(spec.name, field.ty)
 
     stmts: list[PyStmt] = [
@@ -92,40 +94,6 @@ def generate_tree(
         PyClassDef(base_token_class_name, bases=[ 'BaseToken' ], body=[
             PyPassStmt(),
         ]),
-        # def is_foo_token(value: Any) -> TypeGuard[FooToken]:
-        #     return isinstance(value, BaseFooToken)
-        PyFuncDef(
-            is_token_name,
-            params=[ PyNamedParam(PyNamedPattern('value'), annotation=PyNamedExpr('Any')) ],
-            return_type=PySubscriptExpr(PyNamedExpr('TypeGuard'), slices=[ PyConstExpr(token_type_name) ]),
-            body=[
-                PyRetStmt(expr=build_isinstance(PyNamedExpr('value'), PyNamedExpr(base_token_class_name))),
-            ]
-        ),
-        # def is_foo_node(value: Any) -> TypeGuard[FooNode]:
-        #     return isinstance(value, BaseFooNode)
-        PyFuncDef(
-            is_node_name,
-            params=[ PyNamedParam(PyNamedPattern('value'), annotation=PyNamedExpr('Any')) ],
-            return_type=PySubscriptExpr(PyNamedExpr('TypeGuard'), slices=[ PyConstExpr(node_type_name) ]),
-            body=[
-                PyRetStmt(expr=build_isinstance(PyNamedExpr('value'), PyNamedExpr(base_node_class_name))),
-            ]
-        ),
-        # def is_foo_syntax(value: Any) -> TypeGuard[FooSyntax]:
-        #     return isinstance(value, BaseFooSyntax)
-        PyFuncDef(
-            is_syntax_name,
-            params=[ PyNamedParam(PyNamedPattern('value'), annotation=PyNamedExpr('Any')) ],
-            return_type=PySubscriptExpr(PyNamedExpr('TypeGuard'), slices=[ PyConstExpr(syntax_type_name) ]),
-            body=[
-                PyRetStmt(expr=PyInfixExpr(
-                    PyCallExpr(PyNamedExpr(is_node_name), args=[ PyNamedExpr('value') ]),
-                    PyOrKeyword(),
-                    PyCallExpr(PyNamedExpr(is_token_name), args=[ PyNamedExpr('value') ]),
-                )),
-            ]
-        ),
     ]
 
     defs = {}
@@ -183,7 +151,7 @@ def generate_tree(
         required: list[PyParam] = []
         optional: list[PyParam] = []
 
-        for field in spec.members:
+        for field in spec.fields:
 
             param_type, param_expr = gen_initializers(field.ty, PyNamedExpr(field.name), defs=defs, specs=specs, prefix=prefix)
             init_body.append(PyAssignStmt(
@@ -240,7 +208,7 @@ def generate_tree(
         derive_body = []
         derive_args = []
 
-        for field in spec.members:
+        for field in spec.fields:
             #coerce_type, coerce_expr = gen_initializers(field.ty, PyNamedExpr(field.name), specs=specs, defs=defs, prefix=prefix)
             derive_body.append(PyIfStmt(first=PyIfCase(
                 test=build_is_none(PyNamedExpr(field.name)),
@@ -286,7 +254,6 @@ def generate_tree(
 
         cls_name = to_class_name(spec.name, prefix)
 
-        assert(len(spec.members) > 0)
         stmts.append(PyTypeAliasStmt(cls_name, build_union(gen_py_type(ty, prefix) for _, ty in spec.members)))
 
         params: list[PyParam] = []
@@ -315,36 +282,6 @@ def generate_tree(
             parent_type = get_parent_type(spec.name)
             parent_type_name = f'{to_class_name(spec.name, prefix)}Parent'
             stmts.append(PyTypeAliasStmt(parent_type_name, gen_py_type(parent_type, prefix)))
-
-    # Generates:
-    #
-    # Token = Comma | Dot | Ident | ...
-    stmts.append(
-        PyAssignStmt(
-            pattern=PyNamedPattern(token_type_name),
-            value=build_union(PyNamedExpr(to_class_name(name, prefix)) for name in token_names)
-        )
-    )
-
-    # Generates:
-    #
-    # Node = Foo | Bar | ...
-    stmts.append(
-        PyAssignStmt(
-            pattern=PyNamedPattern(node_type_name),
-            value=build_union(PyNamedExpr(to_class_name(name, prefix)) for name in node_names)
-        )
-    )
-
-    # Generates:
-    #
-    # Syntax = Token | Node
-    stmts.append(
-        PyAssignStmt(
-            pattern=PyNamedPattern(syntax_type_name),
-            value=build_union([ PyNamedExpr(token_type_name), PyNamedExpr(node_type_name) ])
-        )
-    )
 
     stmts.extend(defs.values())
 
