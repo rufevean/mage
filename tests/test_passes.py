@@ -5,6 +5,8 @@ from magelang.scanner import Scanner
 from magelang.passes.check_undefined import check_undefined
 from magelang.util import pipe
 
+
+
 def parse_grammar(content: str):
     scanner = Scanner(content, filename="<test>")
     parser = Parser(scanner)
@@ -31,3 +33,5 @@ def test_check_undefined_with_error():
     print("Parsed Grammar Rules:", grammar.rules)  
     with pytest.raises(ValueError, match="Undefined rule referenced: foo"):
         grammar = pipe(grammar, check_undefined)
+
+

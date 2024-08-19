@@ -1,17 +1,2 @@
-
-pub token ident
-  = [a-z_]i [a-z0-9_]i*
-pub expr
-  = char_set_expr
-  | choice_expr
-  | list_expr
-  | lookahead_expr
-  | many_expr
-  | negative_lookahead_expr
-  | opt_expr
-  | ref_expr
-  | repeat_expr
-  | seq_expr
-  | some_expr
-
-
+pub alnum = [a-z0-9]i
+pub ident = alnum+
